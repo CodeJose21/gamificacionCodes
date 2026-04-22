@@ -25,14 +25,17 @@ G = 6.67430e-11
 # CLASE CUERPO CELESTE
 # =========================================================
 class CuerpoCeleste:
-    def __init__(self, space, nombre, masa, x, y, vx, vy, radio_px, color):
+    def __init__(self, space, nombre, masa, x, y, vx, vy, radio_px, color, es_estatico = False):
         self.nombre = nombre
         self.masa = masa
         self.color = color
         self.radio_px = radio_px
 
-        momento = pymunk.moment_for_circle(masa, 0, radio_px)
-        self.body = pymunk.Body(masa, momento)
+        if(es_estatico):
+            self.body = pymunk.Body(body_type=pymunk.Body.STATIC)
+        else:
+            momento = pymunk.moment_for_circle(masa, 0, radio_px)
+            self.body = pymunk.Body(masa, momento)
 
         self.body.position = (x, y)
         self.body.velocity = (vx, vy)
@@ -53,7 +56,6 @@ class CuerpoCeleste:
         fuerza_modulo = G*sol.masa*self.masa/(vector.length)**2
         fuerza_vector = direccion * fuerza_modulo
         self.body.apply_force_at_world_point(fuerza_vector, self.body.position)
-        #sol.body.apply_force_at_world_point(-fuerza_vector, sol.body.position)
 
     def calcular_energia_cinetica(self):
         vx = self.body.velocity.x
@@ -97,7 +99,8 @@ def crear_sistema_solar(space):
         vx=0,
         vy=0,
         radio_px=10,
-        color=(255, 220, 80)
+        color=(255, 220, 80), 
+        es_estatico=True
     )
 
     planetas = [
