@@ -1,0 +1,596 @@
+import math
+import time
+import threading
+import tkinter as tk
+from tkinter import ttk
+
+import pybullet as p
+import pybullet_data
+
+# =========================================================
+# ESTADO COMPARTIDO ENTRE LA GUI Y LA SIMULACIÓN
+# =========================================================
+# Parámetros del código para poder variar en la simulación
+state_lock = threading.Lock()
+
+STATE = {
+    # -----------------------------
+    # PARÁMETROS FÍSICOS DEL PÉNDULO
+    # -----------------------------
+    "length": 2.0,                  # Longitud de la cuerda (m)
+    "mass": 1.0,                    # Masa de la bola (kg)
+    "bob_radius": 0.12,             # Radio visual de la bola (m)
+    "pivot_radius": 0.04,           # Radio visual del pivote (m)
+    "initial_angle_deg": 35.0,      # Ángulo inicial respecto a la vertical (grados)
+    "initial_speed_tangent": 0.0,   # Velocidad inicial tangencial (m/s)
+
+    # -----------------------------
+    # AMORTIGUAMIENTOS
+    # -----------------------------
+    # Ahora NO se aplican manualmente como fuerza.
+    # Se combinan para configurar el damping interno del cuerpo en PyBullet.
+    "global_damping": 0.05,
+    "pendulum_damping": 0.10,
+
+    "gravity": 9.81,                # Aceleración de la gravedad, en Pybullet se mide en (m/s²)
+    "time_step": 1.0 / 240.0,
+    "pivot_position": [0.0, 0.0, 6.0],
+    "real_time": True,
+    "running": False,
+    "reset_requested": False,
+    "print_requested": False,
+    "exit_requested": False
+}
+
+
+# =========================================================
+# CREACIÓN DEL PÉNDULO
+# =========================================================
+def create_pendulum(params):
+    """
+    Crea un péndulo simple formado por:
+
+    - un pivote fijo (cuerpo estático)
+    - una bola dinámica (masa puntual extendida visualmente)
+    - una restricción tipo punto a punto entre ambos
+
+    Aunque la cuerda no se modela como una cuerda elástica real,
+    la restricción geométrica reproduce bien la condición esencial
+    del péndulo: distancia fija al pivote.
+    """
+    length = params["length"]
+    mass = params["mass"]
+    bob_radius = params["bob_radius"]
+    pivot_radius = params["pivot_radius"]
+    pivot_x, pivot_y, pivot_z = params["pivot_position"]
+
+    # Ángulo inicial convertido a radianes
+    angle = math.radians(params["initial_angle_deg"])
+
+    # Posición inicial de la bola en el plano XZ.
+    # Si theta = 0, la bola estaría justo debajo del pivote.
+    bob_x = pivot_x + length * math.sin(angle)
+    bob_y = pivot_y
+    bob_z = pivot_z - length * math.cos(angle)
+
+    # -----------------------------
+    # PIVOTE FIJO
+    # -----------------------------
+    pivot_collision = p.createCollisionShape(p.GEOM_SPHERE, radius=pivot_radius)
+    pivot_visual = p.createVisualShape(
+        p.GEOM_SPHERE,
+        radius=pivot_radius,
+        rgbaColor=[0.2, 0.2, 0.9, 1.0]
+    )
+
+    pivot_id = p.createMultiBody(
+        baseMass=0,
+        baseCollisionShapeIndex=pivot_collision,
+        baseVisualShapeIndex=pivot_visual,
+        basePosition=[pivot_x, pivot_y, pivot_z]
+    )
+
+    # -----------------------------
+    # BOLA DEL PÉNDULO
+    # -----------------------------
+    bob_collision = p.createCollisionShape(p.GEOM_SPHERE, radius=bob_radius)
+    bob_visual = p.createVisualShape(
+        p.GEOM_SPHERE,
+        radius=bob_radius,
+        rgbaColor=[0.85, 0.15, 0.15, 1.0]
+    )
+
+    bob_id = p.createMultiBody(
+        baseMass=mass,
+        baseCollisionShapeIndex=bob_collision,
+        baseVisualShapeIndex=bob_visual,
+        basePosition=[bob_x, bob_y, bob_z]
+    )
+
+    # -----------------------------
+    # DAMPING INTERNO DE PYBULLET
+    # -----------------------------
+    # En lugar de aplicar una fuerza manual de amortiguamiento
+    # en cada iteración, configuramos el damping propio del cuerpo.
+    total_damping = params["global_damping"] + params["pendulum_damping"]
+
+    p.changeDynamics(
+        bob_id,
+        -1,
+        linearDamping=total_damping,
+        angularDamping=total_damping
+    )
+
+    # -----------------------------
+    # RESTRICCIÓN PIVOTE-BOLA
+    # -----------------------------
+    # JOINT_POINT2POINT obliga a que un punto del pivote y un punto
+    # de la bola coincidan. Esto impone la longitud de la cuerda.
+    constraint_id = p.createConstraint(
+        parentBodyUniqueId=pivot_id,
+        parentLinkIndex=-1,
+        childBodyUniqueId=bob_id,
+        childLinkIndex=-1,
+        jointType=p.JOINT_POINT2POINT,
+        jointAxis=[0, 0, 0],
+        parentFramePosition=[0, 0, 0],
+        childFramePosition=[pivot_x - bob_x, pivot_y - bob_y, pivot_z - bob_z]
+    )
+    p.changeConstraint(constraint_id, maxForce=100000)
+
+    # -----------------------------
+    # VELOCIDAD INICIAL TANGENCIAL
+    # -----------------------------
+    # La velocidad inicial se aplica a lo largo de la tangente al arco.
+    vt = params["initial_speed_tangent"]
+    tangent = [math.cos(angle), 0.0, math.sin(angle)]
+    vel = [vt * tangent[0], 0.0, vt * tangent[2]]
+
+    p.resetBaseVelocity(bob_id, linearVelocity=vel)
+
+    return pivot_id, bob_id, constraint_id
+
+
+def remove_pendulum(pivot_id, bob_id, constraint_id):
+    """
+    Elimina el péndulo actual.
+    """
+    try:
+        p.removeConstraint(constraint_id)
+    except Exception:
+        pass
+
+    try:
+        p.removeBody(bob_id)
+    except Exception:
+        pass
+
+    try:
+        p.removeBody(pivot_id)
+    except Exception:
+        pass
+
+
+# =========================================================
+# CUERDA (SOLO VISUAL)
+# =========================================================
+def create_rod(length, radius=0.01, color=(1, 1, 1, 1)):
+    """
+    Crea una representación visual de la cuerda usando un cilindro.
+
+    IMPORTANTE:
+    -----------
+    Esta cuerda es solo VISUAL. La física real del péndulo la impone
+    la restricción entre pivote y bola, no este cilindro.
+    """
+    rod_visual = p.createVisualShape(
+        shapeType=p.GEOM_CYLINDER,
+        radius=radius,
+        length=length,
+        rgbaColor=list(color)
+    )
+
+    rod_id = p.createMultiBody(
+        baseMass=0,
+        baseCollisionShapeIndex=-1,
+        baseVisualShapeIndex=rod_visual,
+        basePosition=[0, 0, 0],
+        baseOrientation=[0, 0, 0, 1]
+    )
+    return rod_id
+
+
+def update_rod(rod_id, bob_id, pivot_position, radius=0.01):
+    """
+    Recoloca la cuerda visual entre pivote y bola.
+
+    FÍSICAMENTE:
+    ------------
+    No altera la simulación. Solo dibuja correctamente la cuerda
+    en la posición que corresponde al estado actual del sistema.
+    """
+    bob_pos, _ = p.getBasePositionAndOrientation(bob_id)
+
+    px, py, pz = pivot_position
+    bx, by, bz = bob_pos
+
+    dx = bx - px
+    dy = by - py
+    dz = bz - pz
+
+    length = math.sqrt(dx * dx + dy * dy + dz * dz)
+    if length < 1e-8:
+        return rod_id
+
+    # Punto medio del segmento pivote-bola
+    mx = (px + bx) / 2.0
+    my = (py + by) / 2.0
+    mz = (pz + bz) / 2.0
+
+    # En PyBullet el cilindro visual está alineado con el eje Z local
+    from_axis = [0.0, 0.0, 1.0]
+    to_axis = [dx / length, dy / length, dz / length]
+
+    cross = [
+        from_axis[1] * to_axis[2] - from_axis[2] * to_axis[1],
+        from_axis[2] * to_axis[0] - from_axis[0] * to_axis[2],
+        from_axis[0] * to_axis[1] - from_axis[1] * to_axis[0],
+    ]
+
+    dot = (
+        from_axis[0] * to_axis[0] +
+        from_axis[1] * to_axis[1] +
+        from_axis[2] * to_axis[2]
+    )
+
+    cross_norm = math.sqrt(cross[0]**2 + cross[1]**2 + cross[2]**2)
+
+    if cross_norm < 1e-8:
+        if dot > 0:
+            quat = [0, 0, 0, 1]
+        else:
+            quat = p.getQuaternionFromEuler([math.pi, 0, 0])
+    else:
+        axis = [cross[0] / cross_norm, cross[1] / cross_norm, cross[2] / cross_norm]
+        angle = math.acos(max(-1.0, min(1.0, dot)))
+        quat = p.getQuaternionFromAxisAngle(axis, angle)
+
+    # Rehacemos el cuerpo visual con la longitud correcta
+    try:
+        p.removeBody(rod_id)
+    except Exception:
+        pass
+
+    rod_visual = p.createVisualShape(
+        shapeType=p.GEOM_CYLINDER,
+        radius=radius,
+        length=length,
+        rgbaColor=[1, 1, 1, 1]
+    )
+
+    new_rod_id = p.createMultiBody(
+        baseMass=0,
+        baseCollisionShapeIndex=-1,
+        baseVisualShapeIndex=rod_visual,
+        basePosition=[mx, my, mz],
+        baseOrientation=quat
+    )
+
+    return new_rod_id
+
+
+# =========================================================
+# MAGNITUDES FÍSICAS PARA MOSTRAR
+# =========================================================
+def get_angle_deg(bob_id, pivot_position):
+    """
+    Devuelve el ángulo instantáneo respecto a la vertical.
+    """
+    pos, _ = p.getBasePositionAndOrientation(bob_id)
+    rx = pos[0] - pivot_position[0]
+    rz = pos[2] - pivot_position[2]
+    return math.degrees(math.atan2(rx, -rz))
+
+
+def get_speed(bob_id):
+    """
+    Devuelve el módulo de la velocidad de la bola.
+    """
+    lin_vel, _ = p.getBaseVelocity(bob_id)
+    return math.sqrt(lin_vel[0] ** 2 + lin_vel[1] ** 2 + lin_vel[2] ** 2)
+
+
+# =========================================================
+# BUCLE PRINCIPAL DE SIMULACIÓN
+# =========================================================
+def simulation_loop():
+    """
+    Hilo principal de simulación.
+
+    RESUMEN FÍSICO DE LO QUE HACE:
+    ------------------------------
+    1. Aplica gravedad.
+    2. Mantiene la distancia pivote-bola con una restricción.
+    3. Deja que PyBullet gestione el damping interno del cuerpo.
+    4. Integra el movimiento con PyBullet.
+    """
+    p.connect(p.GUI)
+    p.configureDebugVisualizer(p.COV_ENABLE_GUI, 0)
+
+    p.setAdditionalSearchPath(pybullet_data.getDataPath())
+    p.setTimeStep(STATE["time_step"])
+    p.setGravity(0, 0, -STATE["gravity"])
+    p.loadURDF("plane.urdf")
+
+    pivot = STATE["pivot_position"]
+
+    # Cámara frontal al péndulo
+    p.resetDebugVisualizerCamera(
+        cameraDistance=3.0,
+        cameraYaw=0,
+        cameraPitch=0,
+        cameraTargetPosition=pivot
+    )
+
+    with state_lock:
+        params = dict(STATE)
+
+    pivot_id, bob_id, constraint_id = create_pendulum(params)
+    rod_id = create_rod(length=params["length"])
+    debug_text_id = -1
+
+    while True:
+        with state_lock:
+            params = dict(STATE)
+
+        if params["exit_requested"]:
+            break
+
+        # Salida por teclado
+        keys = p.getKeyboardEvents()
+        if (ord('q') in keys and keys[ord('q')] & p.KEY_WAS_TRIGGERED) or \
+           (27 in keys and keys[27] & p.KEY_WAS_TRIGGERED):
+            with state_lock:
+                STATE["exit_requested"] = True
+            break
+
+        # Reset del péndulo con los parámetros actuales
+        if params["reset_requested"]:
+            remove_pendulum(pivot_id, bob_id, constraint_id)
+
+            try:
+                p.removeBody(rod_id)
+            except Exception:
+                pass
+
+            p.removeAllUserDebugItems()
+            debug_text_id = -1
+
+            with state_lock:
+                STATE["reset_requested"] = False
+                params = dict(STATE)
+
+            pivot_id, bob_id, constraint_id = create_pendulum(params)
+            rod_id = create_rod(length=params["length"])
+
+            if params["real_time"]:
+                time.sleep(params["time_step"])
+            continue
+
+        # Gravedad actualizable en vivo
+        p.setGravity(0, 0, -params["gravity"])
+
+        # Avanza la simulación solo si está en marcha
+        if params["running"]:
+            p.stepSimulation()
+
+        # Reposiciona la cuerda visual
+        rod_id = update_rod(rod_id, bob_id, pivot, radius=0.008)
+
+        # Mostrar datos físicos
+        if params["print_requested"]:
+            angle_deg = get_angle_deg(bob_id, pivot)
+            speed = get_speed(bob_id)
+
+            text = (
+                f"angulo: {angle_deg:.2f} grados\n"
+                f"velocidad: {speed:.3f} m/s\n"
+                f"longitud: {params['length']:.2f} m\n"
+                f"masa: {params['mass']:.2f} kg\n"
+                f"damping global: {params['global_damping']:.2f}\n"
+                f"damping pendulo: {params['pendulum_damping']:.2f}\n"
+                f"damping total interno: {params['global_damping'] + params['pendulum_damping']:.2f}\n"
+                f"gravedad: {params['gravity']:.2f} m/s²"
+            )
+
+            if debug_text_id != -1:
+                try:
+                    p.removeUserDebugItem(debug_text_id)
+                except Exception:
+                    pass
+
+            debug_text_id = p.addUserDebugText(
+                text=text,
+                textPosition=[-1.3, -0.2, 3.2],
+                textColorRGB=[1, 1, 1],
+                textSize=1.3,
+                lifeTime=0
+            )
+
+            with state_lock:
+                STATE["print_requested"] = False
+
+        if params["real_time"]:
+            time.sleep(params["time_step"])
+
+    # Limpieza
+    try:
+        remove_pendulum(pivot_id, bob_id, constraint_id)
+    except Exception:
+        pass
+
+    try:
+        p.removeBody(rod_id)
+    except Exception:
+        pass
+
+    p.disconnect()
+
+
+# =========================================================
+# FUNCIONES DE CONTROL DESDE TKINTER (Menú donde se ajustan los parámetros)
+# =========================================================
+def set_running(value: bool):
+    with state_lock:
+        STATE["running"] = value
+
+
+def request_reset():
+    with state_lock:
+        STATE["reset_requested"] = True
+        STATE["running"] = False
+
+
+def request_print():
+    with state_lock:
+        STATE["print_requested"] = True
+
+
+def request_exit(root):
+    with state_lock:
+        STATE["exit_requested"] = True
+    root.destroy()
+
+
+def update_float(key, value):
+    with state_lock:
+        STATE[key] = float(value)
+
+
+# =========================================================
+# INTERFAZ DE CONTROL
+# =========================================================
+def build_control_window():
+    root = tk.Tk()
+    root.title("Control del péndulo amortiguado")
+    root.geometry("460x820")
+    root.resizable(True, True)
+
+    root.protocol("WM_DELETE_WINDOW", lambda: request_exit(root))
+
+    frame = ttk.Frame(root, padding=12)
+    frame.pack(fill="both", expand=True)
+
+    ttk.Label(
+        frame,
+        text="Parámetros",
+        font=("Segoe UI", 12, "bold")
+    ).pack(anchor="w", pady=(0, 10))
+
+    def make_slider(label, key, frm, to):
+        container = ttk.Frame(frame)
+        container.pack(fill="x", pady=6)
+
+        top_row = ttk.Frame(container)
+        top_row.pack(fill="x")
+
+        ttk.Label(top_row, text=label).pack(side="left")
+        value_label = ttk.Label(top_row, text=f"{STATE[key]:.3f}")
+        value_label.pack(side="right")
+
+        scale = tk.Scale(
+            container,
+            from_=frm,
+            to=to,
+            orient="horizontal",
+            resolution=0.01,
+            length=400,
+            command=lambda v, k=key, lbl=value_label: (
+                update_float(k, v),
+                lbl.config(text=f"{float(v):.3f}")
+            )
+        )
+        scale.set(STATE[key])
+        scale.pack(fill="x")
+
+    # Sliders físicos
+    make_slider("Longitud", "length", 0.5, 5.0)
+    make_slider("Masa", "mass", 0.1, 10.0)
+    make_slider("Ángulo inicial (deg)", "initial_angle_deg", -170.0, 170.0)
+    make_slider("Velocidad tangencial inicial", "initial_speed_tangent", -10.0, 10.0)
+    make_slider("Damping global", "global_damping", 0.0, 1.0)
+    make_slider("Damping propio del péndulo", "pendulum_damping", 0.0, 1.0)
+    make_slider("Gravedad", "gravity", 0.0, 20.0)
+
+    ttk.Separator(frame).pack(fill="x", pady=12)
+
+    ttk.Label(
+        frame,
+        text="Controles",
+        font=("Segoe UI", 11, "bold")
+    ).pack(anchor="w", pady=(0, 8))
+
+    buttons1 = ttk.Frame(frame)
+    buttons1.pack(fill="x", pady=4)
+
+    ttk.Button(
+        buttons1,
+        text="Iniciar",
+        command=lambda: set_running(True)
+    ).pack(side="left", expand=True, fill="x", padx=4)
+
+    ttk.Button(
+        buttons1,
+        text="Pausa",
+        command=lambda: set_running(False)
+    ).pack(side="left", expand=True, fill="x", padx=4)
+
+    buttons2 = ttk.Frame(frame)
+    buttons2.pack(fill="x", pady=4)
+
+    ttk.Button(
+        buttons2,
+        text="Reset",
+        command=request_reset
+    ).pack(side="left", expand=True, fill="x", padx=4)
+
+    ttk.Button(
+        buttons2,
+        text="Imprimir datos",
+        command=request_print
+    ).pack(side="left", expand=True, fill="x", padx=4)
+
+    buttons3 = ttk.Frame(frame)
+    buttons3.pack(fill="x", pady=4)
+
+    ttk.Button(
+        buttons3,
+        text="Salir",
+        command=lambda: request_exit(root)
+    ).pack(side="left", expand=True, fill="x", padx=4)
+
+    info = (
+        "Longitud, masa, ángulo inicial y velocidad inicial\n"
+        "se aplican al pulsar Reset.\n"
+        "El damping también se actualiza al pulsar Reset.\n"
+        "Q o ESC cierran la simulación.\n"
+        "La rueda del ratón permite regular el zoom de la cámara"
+    )
+
+    ttk.Label(
+        frame,
+        text=info,
+        justify="left"
+    ).pack(anchor="w", pady=(14, 0))
+
+    root.mainloop()
+
+
+# =========================================================
+# MAIN
+# =========================================================
+if __name__ == "__main__":
+    sim_thread = threading.Thread(target=simulation_loop, daemon=True)
+    sim_thread.start()
+    build_control_window()
+    sim_thread.join(timeout=1.0)
