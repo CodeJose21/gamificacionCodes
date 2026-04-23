@@ -1,0 +1,307 @@
+import math
+import sys
+import pygame
+import pymunk
+import pymunk.pygame_util
+
+WIDTH, HEIGHT = 1200, 700
+FPS = 60
+
+BACKGROUND = (245, 245, 245)
+BLACK = (20, 20, 20, 255)
+RED = (200, 40, 40, 255)
+BLUE = (40, 80, 200, 255)
+GREEN = (30, 150, 80, 255)
+GRAY = (120, 120, 120, 255)
+
+PIXELS_PER_METER = 220
+SUBSTEPS = 10
+DT = 1 / FPS
+SUB_DT = DT / SUBSTEPS
+G = 9.81
+
+MASA_PROYECTIL = 0.03
+RADIO_PROYECTIL = 10
+VELOCIDAD_INICIAL_M_S = 23.0
+VELOCIDAD_INICIAL_PX_S = VELOCIDAD_INICIAL_M_S * PIXELS_PER_METER
+
+MASA_BLOQUE = 0.50
+RADIO_BLOQUE = 22
+
+LONGITUD_PENDULO_M = 1.0
+LONGITUD_PENDULO_PX = LONGITUD_PENDULO_M * PIXELS_PER_METER
+
+PIVOT_X = 850
+PIVOT_Y = 120
+
+PROYECTIL_X0 = 120
+PROYECTIL_Y0 = PIVOT_Y + LONGITUD_PENDULO_PX
+
+
+class Proyectil:
+    def __init__(self, space, x, y, masa, radio):
+        self.space = space
+        self.masa = masa
+        self.radio = radio
+        self.disparada = False
+        self.velocidad_reconstruida_m_s = None
+
+        self.body = pymunk.Body(body_type=pymunk.Body.KINEMATIC)
+        self.body.position = (x, y)
+        self.body.velocity = (0, 0)
+
+        self.shape = pymunk.Circle(self.body, radio)
+        self.shape.color = RED
+        self.shape.elasticity = 0.0
+        self.shape.friction = 0.0
+        self.shape.collision_type = 1
+
+        space.add(self.body, self.shape)
+
+    def disparar(self, velocidad_x, velocidad_y=0):
+        if self.disparada:
+            return
+
+        posicion_actual = self.body.position
+
+        self.space.remove(self.body, self.shape)
+
+        moment = pymunk.moment_for_circle(self.masa, 0, self.radio)
+        self.body = pymunk.Body(self.masa, moment, body_type=pymunk.Body.DYNAMIC)
+        self.body.position = posicion_actual
+        self.body.velocity = (velocidad_x, velocidad_y)
+
+        self.shape = pymunk.Circle(self.body, self.radio)
+        self.shape.color = RED
+        self.shape.elasticity = 0.0
+        self.shape.friction = 0.0
+        self.shape.collision_type = 1
+
+        self.space.add(self.body, self.shape)
+        self.disparada = True
+
+    def comprobar_velocidad_inicial(self, pendulo):
+        altura = pendulo.obtener_altura_max_m()
+        if altura <= 0:
+            return 0.0
+
+        V = math.sqrt(2 * G * altura)
+        v = ((self.masa + pendulo.masa_bloque) * V) / self.masa
+        return v
+
+
+class Pendulo:
+    def __init__(self, space, pivot_x, pivot_y, masa_bloque, radio_bloque, longitud_px):
+        self.space = space
+        self.pivot = (pivot_x, pivot_y)
+        self.longitud_px = longitud_px
+
+        x_bloque = pivot_x
+        y_bloque = pivot_y + longitud_px
+
+        self.masa_bloque = masa_bloque
+        self.radio_bloque = radio_bloque
+
+        self.body = pymunk.Body(
+            masa_bloque,
+            pymunk.moment_for_circle(masa_bloque, 0, radio_bloque)
+        )
+        self.body.position = (x_bloque, y_bloque)
+
+        self.shape = pymunk.Circle(self.body, radio_bloque)
+        self.shape.color = BLUE
+        self.shape.elasticity = 0.0
+        self.shape.friction = 0.6
+        self.shape.collision_type = 2
+
+        self.joint = pymunk.PinJoint(
+            self.body,
+            space.static_body,
+            (0, 0),
+            self.pivot
+        )
+
+        space.add(self.body, self.shape, self.joint)
+
+        self.impactado = False
+        self.y_inicial = y_bloque
+        self.altura_max_px = 0.0
+        self.altura_max_m_confirmada = False
+
+    def dibujar_cuerda(self, screen):
+        x1, y1 = self.pivot
+        x2, y2 = self.body.position
+        pygame.draw.line(screen, (20, 20, 20), (x1, y1), (x2, y2), 3)
+
+    def actualizar_altura_maxima(self):
+        altura_actual = self.y_inicial - self.body.position.y
+        if altura_actual > self.altura_max_px:
+            self.altura_max_px = altura_actual
+
+    def obtener_altura_actual_m(self):
+        altura_actual_px = max(0, self.y_inicial - self.body.position.y)
+        return altura_actual_px / PIXELS_PER_METER
+
+    def obtener_altura_max_m(self):
+        return self.altura_max_px / PIXELS_PER_METER
+
+
+def crear_espacio():
+    space = pymunk.Space()
+    space.gravity = (0, G * PIXELS_PER_METER)
+    return space
+
+
+def dibujar_pivote(screen, x, y):
+    pygame.draw.circle(screen, (20, 20, 20), (int(x), int(y)), 6)
+
+
+def dibujar_texto(screen, texto, x, y, font, color=(20, 20, 20)):
+    superficie = font.render(texto, True, color)
+    screen.blit(superficie, (x, y))
+
+
+def fusionar_proyectil_con_pendulo(space, proyectil, pendulo):
+    if pendulo.impactado:
+        return
+
+    m1 = proyectil.masa
+    m2 = pendulo.masa_bloque
+
+    vx1, vy1 = proyectil.body.velocity
+    vx2, vy2 = pendulo.body.velocity
+
+    vfx = (m1 * vx1 + m2 * vx2) / (m1 + m2)
+    vfy = (m1 * vy1 + m2 * vy2) / (m1 + m2)
+
+    space.remove(proyectil.body, proyectil.shape)
+
+    pendulo.body.mass = m1 + m2
+    pendulo.body.moment = pymunk.moment_for_circle(m1 + m2, 0, pendulo.radio_bloque)
+    pendulo.body.velocity = (vfx, vfy)
+    pendulo.impactado = True
+
+
+def main():
+    pygame.init()
+    screen = pygame.display.set_mode((WIDTH, HEIGHT))
+    pygame.display.set_caption("Péndulo balístico")
+    clock = pygame.time.Clock()
+    font = pygame.font.SysFont("arial", 22)
+
+    draw_options = pymunk.pygame_util.DrawOptions(screen)
+    space = crear_espacio()
+
+    proyectil = Proyectil(
+        space,
+        PROYECTIL_X0,
+        PROYECTIL_Y0,
+        MASA_PROYECTIL,
+        RADIO_PROYECTIL
+    )
+
+    pendulo = Pendulo(
+        space,
+        PIVOT_X,
+        PIVOT_Y,
+        MASA_BLOQUE,
+        RADIO_BLOQUE,
+        LONGITUD_PENDULO_PX
+    )
+
+    def colision(arbiter, space_interno, data):
+        nonlocal proyectil, pendulo
+        if not pendulo.impactado and proyectil.disparada:
+            fusionar_proyectil_con_pendulo(space_interno, proyectil, pendulo)
+        return False
+
+    space.on_collision(1, 2, begin=colision)
+
+    running = True
+    while running:
+        clock.tick(FPS)
+
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                running = False
+
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_SPACE:
+                    proyectil.disparar(VELOCIDAD_INICIAL_PX_S, 0)
+
+        for _ in range(SUBSTEPS):
+            space.step(SUB_DT)
+
+        if pendulo.impactado:
+            pendulo.actualizar_altura_maxima()
+
+            if (
+                proyectil.velocidad_reconstruida_m_s is None
+                and pendulo.body.velocity.y >= 0
+                and pendulo.obtener_altura_max_m() > 0
+            ):
+                proyectil.velocidad_reconstruida_m_s = proyectil.comprobar_velocidad_inicial(pendulo)
+
+        screen.fill(BACKGROUND)
+
+        pendulo.dibujar_cuerda(screen)
+        dibujar_pivote(screen, PIVOT_X, PIVOT_Y)
+        space.debug_draw(draw_options)
+
+        velocidad_bala_px_s = proyectil.body.velocity.length if not pendulo.impactado else 0
+        velocidad_bala_m_s = velocidad_bala_px_s / PIXELS_PER_METER
+        velocidad_pendulo_px_s = pendulo.body.velocity.length
+        velocidad_pendulo_m_s = velocidad_pendulo_px_s / PIXELS_PER_METER
+
+        angulo = math.degrees(math.atan2(
+            pendulo.body.position.x - PIVOT_X,
+            pendulo.body.position.y - PIVOT_Y
+        ))
+
+        altura_actual_m = pendulo.obtener_altura_actual_m()
+        altura_max_m = pendulo.obtener_altura_max_m()
+
+        dibujar_texto(screen, f"Velocidad inicial real programada: {VELOCIDAD_INICIAL_M_S:.3f} m/s", 20, 20, font)
+        dibujar_texto(screen, f"Velocidad bala actual: {velocidad_bala_m_s:.3f} m/s", 20, 50, font)
+        dibujar_texto(screen, f"Masa proyectil: {MASA_PROYECTIL:.3f} kg", 20, 80, font)
+        dibujar_texto(screen, f"Masa bloque: {MASA_BLOQUE:.3f} kg", 20, 110, font)
+        dibujar_texto(screen, f"Velocidad actual del pendulo: {velocidad_pendulo_m_s:.3f} m/s", 20, 140, font)
+        dibujar_texto(screen, f"Angulo actual: {angulo:.2f} grados", 20, 170, font)
+        dibujar_texto(screen, f"Altura actual del pendulo: {altura_actual_m:.4f} m", 20, 200, font)
+        dibujar_texto(screen, f"Altura maxima alcanzada: {altura_max_m:.4f} m", 20, 230, font)
+
+        if proyectil.velocidad_reconstruida_m_s is not None:
+            error_abs = abs(proyectil.velocidad_reconstruida_m_s - VELOCIDAD_INICIAL_M_S)
+            error_rel = 100 * error_abs / VELOCIDAD_INICIAL_M_S if VELOCIDAD_INICIAL_M_S != 0 else 0.0
+
+            dibujar_texto(
+                screen,
+                f"Velocidad inicial deducida por pendulo balistico: {proyectil.velocidad_reconstruida_m_s:.3f} m/s",
+                20, 270, font, GREEN
+            )
+            dibujar_texto(
+                screen,
+                f"Error absoluto: {error_abs:.3f} m/s",
+                20, 300, font
+            )
+            dibujar_texto(
+                screen,
+                f"Error relativo: {error_rel:.2f} %",
+                20, 330, font
+            )
+
+        if pendulo.impactado:
+            dibujar_texto(screen, "Estado: impacto realizado", 20, 380, font, (30, 150, 80))
+        elif proyectil.disparada:
+            dibujar_texto(screen, "Estado: bala disparada", 20, 380, font, (200, 40, 40))
+        else:
+            dibujar_texto(screen, "Estado: bala en reposo (pulsa ESPACIO)", 20, 380, font, (200, 40, 40))
+
+        pygame.display.flip()
+
+    pygame.quit()
+    sys.exit()
+
+
+if __name__ == "__main__":
+    main()
