@@ -49,6 +49,37 @@ def draw_zigzag_spring(screen, start, end, num_steps=25, width=15):
     pygame.draw.lines(screen, GRAY, False, points, 2)
 
 
+def calcular_energia_cinetica(body):
+    """Calcula la energía cinética traslacional."""
+    v = body.velocity.length
+    ec = 0.5 * body.mass * (v ** 2)
+    return ec
+
+def calcular_energia_potencial_gravitatoria(body, gravedad, y_referencia):
+    """
+    Calcula la energía potencial gravitatoria.
+    Como en pantalla y crece hacia abajo, la altura se toma como:
+    h = y_referencia - y
+    """
+    h = y_referencia - body.position.y
+    epg = body.mass * gravedad * h
+    return epg
+
+
+def calcular_energia_potencial_elastica(body, punto_anclaje, longitud_reposo, k):
+    """
+    Calcula la energía potencial elástica del muelle.
+    x = longitud_actual - longitud_reposo
+    """
+    dx = body.position.x - punto_anclaje[0]
+    dy = body.position.y - punto_anclaje[1]
+    longitud_actual = math.sqrt(dx**2 + dy**2)
+    deformacion = longitud_actual - longitud_reposo
+    epe = 0.5 * k * (deformacion ** 2)
+    return epe
+
+
+
 # =========================================================
 # PLANTILLA DE LA SIMULACIÓN
 # =========================================================
@@ -86,9 +117,8 @@ def run_simulation():
     # AJUSTA TÚ ESTO
     kmuelle = 150
 
-    # Puedes poner tu propia fórmula
-    # Ejemplo basado en amortiguamiento crítico:
-    bmuelle = math.sqrt(4 * mass * kmuelle) * 0.007
+    # Ejemplo basado en amortiguamiento crítico
+    bmuelle = 0 #math.sqrt(4 * mass * kmuelle) * 0.007
 
     rest_length = 350
 
@@ -105,6 +135,8 @@ def run_simulation():
     body.velocity = (0, -80)
 
     shape = pymunk.Circle(body, radius)
+    shape.elasticity = 0.0
+    shape.friction = 0.0
     space.add(body, shape)
 
     # -----------------------------------------------------
@@ -150,7 +182,13 @@ def run_simulation():
         pygame.draw.line(screen, BLACK, (150, 50), (450, 50), 5)
 
         # Muelle dibujado
-        draw_zigzag_spring(screen, ceiling_pos, body.position, num_steps=30, width=15)
+        draw_zigzag_spring(
+            screen,
+            ceiling_pos,
+            (body.position.x, body.position.y),
+            num_steps=30,
+            width=15
+        )
 
         # Esfera
         pos = (int(body.position.x), int(body.position.y))
@@ -171,9 +209,23 @@ def run_simulation():
         texto2 = font.render(f"vy = {body.velocity.y:.2f}", True, BLACK)
         texto3 = font.render(f"y_equ = {y_equ:.2f}", True, BLACK)
 
+        ec = calcular_energia_cinetica(body)
+        epg = calcular_energia_potencial_gravitatoria(body, space.gravity[1], HEIGHT)
+        epe = calcular_energia_potencial_elastica(body, ceiling_pos, rest_length, kmuelle)
+        em = ec + epg + epe
+
+        texto4 = font.render(f"Ec = {ec:.2f}", True, BLACK)
+        texto5 = font.render(f"Epg = {epg:.2f}", True, BLACK)
+        texto6 = font.render(f"Epe = {epe:.2f}", True, BLACK)
+        texto7 = font.render(f"Em = {em:.2f}", True, BLACK)
+
         screen.blit(texto1, (20, 20))
         screen.blit(texto2, (20, 50))
         screen.blit(texto3, (20, 80))
+        screen.blit(texto4, (20, 110))
+        screen.blit(texto5, (20, 140))
+        screen.blit(texto6, (20, 170))
+        screen.blit(texto7, (20, 200))
 
         pygame.display.flip()
         clock.tick(FPS)
