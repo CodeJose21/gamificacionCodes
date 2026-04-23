@@ -1,0 +1,226 @@
+import math
+import pygame
+import pymunk
+import pymunk.pygame_util
+
+# =========================================================
+# CONFIGURACIÓN
+# =========================================================
+WIDTH, HEIGHT = 1000, 600
+FPS = 60
+NIVEL_DEL_SUELO = HEIGHT - 60
+
+PX_M = 5
+RADIO_M = 0.0213
+
+# Tamaño visual de la bola
+RADIO_BOLA = int(RADIO_M * PX_M * 60)
+
+# =========================================================
+# SUELO
+# =========================================================
+def crearSuelo(space):
+    body = pymunk.Body(body_type=pymunk.Body.STATIC)
+
+    suelo = pymunk.Segment(
+        body,
+        (0, NIVEL_DEL_SUELO),
+        (WIDTH, NIVEL_DEL_SUELO),
+        2
+    )
+    suelo.friction = 0.8
+    suelo.elasticity = 0.0
+
+    space.add(body, suelo)
+    return suelo
+
+
+# =========================================================
+# BOLA FÍSICA
+# =========================================================
+def crearBola(space, x, y):
+    masa = 1
+    momento = pymunk.moment_for_circle(masa, 0, RADIO_BOLA)
+
+    body = pymunk.Body(masa, momento)
+    body.position = (x, y)
+
+    shape = pymunk.Circle(body, RADIO_BOLA)
+    shape.friction = 0.8
+    shape.elasticity = 0.2
+
+    space.add(body, shape)
+    return body, shape
+
+
+# =========================================================
+# PALO FÍSICO
+# =========================================================
+def crearPalo(space, pivot_x, pivot_y):
+    """
+    El palo será un cuerpo cinemático:
+    - mango: segmento
+    - cabeza: triángulo
+    El pivote visual es la parte superior del mango.
+    """
+    body = pymunk.Body(body_type=pymunk.Body.KINEMATIC)
+    body.position = (pivot_x, pivot_y)
+
+    largo_mango = 120
+
+    # Mango local: desde (0,0) hasta (0,120)
+    mango = pymunk.Segment(body, (0, 0), (0, largo_mango), 3)
+    mango.friction = 0.8
+    mango.elasticity = 0.0
+
+    # Cabeza triangular local, unida al extremo inferior del mango
+    cabeza = pymunk.Poly(body, [
+        (0, largo_mango),       # unión con el mango
+        (0, largo_mango + 22),  # baja recto
+        (32, largo_mango + 22)  # punta hacia la derecha
+    ])
+    cabeza.friction = 0.8
+    cabeza.elasticity = 0.0
+
+    space.add(body, mango, cabeza)
+    return body, mango, cabeza
+
+
+# =========================================================
+# DIBUJO DEL PALO
+# =========================================================
+def dibujar_palo(screen, palo_body):
+    largo_mango = 120
+
+    # Puntos locales
+    p0 = palo_body.local_to_world((0, 0))
+    p1 = palo_body.local_to_world((0, largo_mango))
+
+    pygame.draw.line(
+        screen,
+        (60, 60, 60),
+        (int(p0.x), int(p0.y)),
+        (int(p1.x), int(p1.y)),
+        6
+    )
+
+    tri_local = [
+        (0, largo_mango),
+        (0, largo_mango + 22),
+        (32, largo_mango + 22)
+    ]
+    tri_world = [palo_body.local_to_world(p) for p in tri_local]
+    tri_points = [(int(p.x), int(p.y)) for p in tri_world]
+
+    pygame.draw.polygon(screen, (40, 40, 40), tri_points)
+
+
+# =========================================================
+# RUN
+# =========================================================
+def run():
+    pygame.init()
+    screen = pygame.display.set_mode((WIDTH, HEIGHT))
+    pygame.display.set_caption("Golf")
+    clock = pygame.time.Clock()
+
+    try:
+        bg_image = pygame.image.load("ejClase/golf/calle_golf.png")
+        bg_width, bg_height = bg_image.get_size()
+
+        bg_width = int(bg_width * 0.7)
+        bg_height = int(bg_height * 0.6)
+
+        aspect_ratio = bg_height / bg_width
+        new_height = int(WIDTH * aspect_ratio)
+
+        bg_image = pygame.transform.scale(bg_image, (WIDTH, new_height))
+        bg_pos = (0, HEIGHT - new_height)
+
+    except pygame.error:
+        print("No se pudo cargar la imagen calle_golf.png. Se usará fondo azul.")
+        bg_image = None
+
+    space = pymunk.Space()
+    space.gravity = (0, 900)
+
+    crearSuelo(space)
+
+    # Bola física
+    x_bola = 100
+    y_bola = NIVEL_DEL_SUELO - RADIO_BOLA
+    bola_body, bola_shape = crearBola(space, x_bola, y_bola)
+
+    # Palo físico: un poco más abajo
+    pivot_x = x_bola - 40
+    pivot_y = y_bola - 120
+    palo_body, mango_shape, cabeza_shape = crearPalo(space, pivot_x, pivot_y)
+
+    # Swing
+    angulo_inicial = 25
+    angulo_final = -35
+    angulo_palo = angulo_inicial
+    velocidad_angular = 180  # grados/s
+    swing_activo = False
+
+    palo_body.angle = math.radians(angulo_palo)
+
+    running = True
+    while running:
+        dt = 1.0 / FPS
+
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                running = False
+
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_SPACE and not swing_activo:
+                    swing_activo = True
+
+                if event.key == pygame.K_r:
+                    swing_activo = False
+                    angulo_palo = angulo_inicial
+                    palo_body.angle = math.radians(angulo_palo)
+                    palo_body.angular_velocity = 0
+
+                    bola_body.position = (x_bola, y_bola)
+                    bola_body.velocity = (0, 0)
+                    bola_body.angular_velocity = 0
+                    bola_body.angle = 0
+
+        # Animación del swing moviendo el cuerpo físico del palo
+        if swing_activo:
+            angulo_palo -= velocidad_angular * dt
+            palo_body.angle = math.radians(angulo_palo)
+
+            if angulo_palo <= angulo_final:
+                angulo_palo = angulo_final
+                palo_body.angle = math.radians(angulo_palo)
+                swing_activo = False
+
+        space.step(dt)
+
+        screen.fill((135, 206, 235))
+
+        if bg_image:
+            screen.blit(bg_image, bg_pos)
+
+        # Dibujar bola
+        pygame.draw.circle(
+            screen,
+            (255, 255, 255),
+            (int(bola_body.position.x), int(bola_body.position.y)),
+            RADIO_BOLA
+        )
+
+        # Dibujar palo
+        dibujar_palo(screen, palo_body)
+
+        pygame.display.flip()
+        clock.tick(FPS)
+
+    pygame.quit()
+
+
+if __name__ == "__main__":
+    run()
