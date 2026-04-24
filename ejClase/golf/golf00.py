@@ -2,6 +2,8 @@ import math
 import pygame
 import pymunk
 import pymunk.pygame_util
+import rozamiento_aire as roz
+import numpy as np
 
 # =========================================================
 # CONFIGURACIÓN
@@ -11,6 +13,7 @@ FPS = 60
 NIVEL_DEL_SUELO = HEIGHT - 60
 
 PX_M = 5
+M_PX = 1 / PX_M
 RADIO_M = 0.0213
 
 # Tamaño visual de la bola
@@ -47,7 +50,7 @@ def crearBola(space, x, y):
 
     shape = pymunk.Circle(body, RADIO_BOLA)
     shape.friction = 0.8
-    shape.elasticity = 0.2
+    shape.elasticity = 0.8
 
     space.add(body, shape)
     return body, shape
@@ -66,21 +69,19 @@ def crearPalo(space, pivot_x, pivot_y):
     body = pymunk.Body(body_type=pymunk.Body.KINEMATIC)
     body.position = (pivot_x, pivot_y)
 
-    largo_mango = 120
+    largo_mango = 105
 
-    # Mango local: desde (0,0) hasta (0,120)
     mango = pymunk.Segment(body, (0, 0), (0, largo_mango), 3)
     mango.friction = 0.8
-    mango.elasticity = 0.0
+    mango.elasticity = 0.7
 
-    # Cabeza triangular local, unida al extremo inferior del mango
     cabeza = pymunk.Poly(body, [
-        (0, largo_mango),       # unión con el mango
-        (0, largo_mango + 22),  # baja recto
-        (32, largo_mango + 22)  # punta hacia la derecha
+        (0, largo_mango),
+        (0, largo_mango + 22),
+        (32, largo_mango + 22)
     ])
     cabeza.friction = 0.8
-    cabeza.elasticity = 0.0
+    cabeza.elasticity = 0.7
 
     space.add(body, mango, cabeza)
     return body, mango, cabeza
@@ -90,9 +91,8 @@ def crearPalo(space, pivot_x, pivot_y):
 # DIBUJO DEL PALO
 # =========================================================
 def dibujar_palo(screen, palo_body):
-    largo_mango = 120
+    largo_mango = 105
 
-    # Puntos locales
     p0 = palo_body.local_to_world((0, 0))
     p1 = palo_body.local_to_world((0, largo_mango))
 
@@ -151,19 +151,19 @@ def run():
     y_bola = NIVEL_DEL_SUELO - RADIO_BOLA
     bola_body, bola_shape = crearBola(space, x_bola, y_bola)
 
-    # Palo físico: un poco más abajo
+    # Palo físico
     pivot_x = x_bola - 40
     pivot_y = y_bola - 120
     palo_body, mango_shape, cabeza_shape = crearPalo(space, pivot_x, pivot_y)
 
     # Swing
-    angulo_inicial = 25
+    angulo_inicial = 45
     angulo_final = -35
-    angulo_palo = angulo_inicial
-    velocidad_angular = 180  # grados/s
+    velocidad_angular = 300  # grados/s
     swing_activo = False
 
-    palo_body.angle = math.radians(angulo_palo)
+    palo_body.angle = math.radians(angulo_inicial)
+    palo_body.angular_velocity = 0
 
     running = True
     while running:
@@ -176,27 +176,35 @@ def run():
             if event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_SPACE and not swing_activo:
                     swing_activo = True
+                    palo_body.angular_velocity = -math.radians(velocidad_angular)
 
                 if event.key == pygame.K_r:
                     swing_activo = False
-                    angulo_palo = angulo_inicial
-                    palo_body.angle = math.radians(angulo_palo)
+                    palo_body.angle = math.radians(angulo_inicial)
                     palo_body.angular_velocity = 0
 
                     bola_body.position = (x_bola, y_bola)
                     bola_body.velocity = (0, 0)
                     bola_body.angular_velocity = 0
                     bola_body.angle = 0
+                    bola_body.activate()
 
-        # Animación del swing moviendo el cuerpo físico del palo
         if swing_activo:
-            angulo_palo -= velocidad_angular * dt
-            palo_body.angle = math.radians(angulo_palo)
-
-            if angulo_palo <= angulo_final:
-                angulo_palo = angulo_final
-                palo_body.angle = math.radians(angulo_palo)
+            if palo_body.angle <= math.radians(angulo_final):
+                palo_body.angle = math.radians(angulo_final)
+                palo_body.angular_velocity = 0
                 swing_activo = False
+
+        # =================================================
+        # ROZAMIENTO DEL AIRE
+        # OJO: estas funciones esperan magnitudes en metros
+        # =================================================
+        v_m = bola_body.velocity.length * M_PX
+        diametro_m = 2 * RADIO_M
+        area_m2 = np.pi * (RADIO_M ** 2)
+
+        cd = roz.get_Cd(v=v_m, D=diametro_m, crisis=True, golf=True)
+        roz.aplicar_newton(bola_body, area_m2, M_PX=M_PX, Cd=cd)
 
         space.step(dt)
 
@@ -205,13 +213,19 @@ def run():
         if bg_image:
             screen.blit(bg_image, bg_pos)
 
-        # Dibujar bola
-        pygame.draw.circle(
-            screen,
-            (255, 255, 255),
-            (int(bola_body.position.x), int(bola_body.position.y)),
-            RADIO_BOLA
-        )
+        # Dibujar bola de forma segura
+        x_draw = bola_body.position.x
+        y_draw = bola_body.position.y
+
+        if math.isfinite(x_draw) and math.isfinite(y_draw):
+            pygame.draw.circle(
+                screen,
+                (255, 255, 255),
+                (round(x_draw), round(y_draw)),
+                RADIO_BOLA
+            )
+        else:
+            print("Posición inválida de la bola:", bola_body.position)
 
         # Dibujar palo
         dibujar_palo(screen, palo_body)

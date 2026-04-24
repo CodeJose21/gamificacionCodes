@@ -2,17 +2,130 @@ import math
 import numpy as np
 from pymunk.vec2d import Vec2d
 
+
+#####################################################################
+
+def aplicar_frenado_aire_rotacional(body, R=None, rho=1.225, Cm=0.02):  #golf 0.07
+	"""
+	Aplica el torque de resistencia aerodinámica a la rotación (Spin Decay).
+	Tau = -0.5 * rho * w^2 * R^5 * Cm
+	"""
+	
+	if R==None:
+		R=list(body.shapes)[0].radius 
+		
+	w = body.angular_velocity  # En radianes por segundo
+	
+	if abs(w) > 0.01:  # Evitamos cálculos si casi no gira
+		# Calculamos la magnitud del torque (cuadrática con omega)
+		# Nota: usamos abs(w) para que la magnitud sea siempre positiva
+		# y luego aplicamos el signo opuesto al final.
+		torque_magnitud = 0.5 * rho * (w**2) * (R**5) * Cm
+		
+		# El torque debe oponerse al giro actual
+		signo_opuesto = -1 if w > 0 else 1
+		
+		# Aplicamos el torque directamente al cuerpo de Pymunk
+		body.torque += signo_opuesto * torque_magnitud
+
+
+############################################################
+def aplicar_rodadura(body,FNorm=None,R=None,Crr=0.02, dt=1/60.0):
+	"""
+	Aplica un torque disipativo que simula la resistencia a la rodadura.
+	No genera movimiento inverso al detenerse.
+	
+	En R hay que pasar el radio pixeles, para comodidad el usuario
+	si R=None, se calcula suponiendo que el body tiene solo un shape
+	que es un disco.
+	Igual con FNorm, si se pasa None, se calcula como masa*gravedad
+	en caso contrario se toma el valor que se pase
+	"""
+
+	if R==None:
+		R=list(body.shapes)[0].radius 
+	if FNorm==None:
+		FNorm=(body.mass*body.space.gravity).length	
+		
+		
+	# Para no tener que andar con ángulos de inclinación y otros datos
+	# pedimos la FNorm (en liso y sin otras fuerzas será masa*gavedad
+	torque_rodadura_max = Crr * FNorm * R
+	w = body.angular_velocity
+	if abs(w) > 0.01:
+		# Direccion opuesta al giro
+		dir_freno = -1 if w > 0 else 1
+		# Torque necesario para detener la rueda en exactamente un paso (dt)
+		# Basado en T = I * alpha -> T = I * (w / dt)
+		torque_detencion_total = (body.moment * abs(w)) / dt
+		# Elegimos el menor: el fisico o el que la clava a cero
+		torque_final = min(torque_rodadura_max, torque_detencion_total)
+		# Sumamos al torque ya existente (motor, etc.)
+		body.torque += dir_freno * torque_final
+	else:
+		# Umbral de parada total para evitar micro-vibraciones (jitter)
+		body.velocity=(0,0)
+		body.angular_velocity = 0
+##############################################################
+
+###########################################################
+# Calcula el numero de Reynolds en función de la velocidad,
+# una longitud característica, la viscosidad y la densidad
+# del fluido. Por defecto mu y rho son las del aire en con
+# diciones normales.
+#-----------------------------------------------------
+def get_reynolds(v, D, mu=1.85e-5,rho=1.225):
+	"""
+	Calcula el número de Reynolds (Re).
+	
+	Parámetros:
+	v -> modulo de velocidad (float): m/s
+	D -> longitud_caracteristica (float): m (ej. diámetro de tubería)
+	     Si es una esfera es el diametro
+	mu -> viscosidad dinamica (float): Pa·s o kg/(m·s)
+	rho -> densidad (float): kg/m^3
+	"""
+	try:
+		re = (rho* v * D) / mu
+		return re
+	except ZeroDivisionError:
+		return float('inf')
+
 #######################################################################
 #Calcula el coeficiente de arraste para UNA ESFERA para valor del número de reynolds
 #Si crisis es False, no tiene en cuenta la crisis de arrastre y supone
 #que Cd es constante después de la zona de Newton
 #---------------------------------------------------------------------
-def get_Cd(Re,crisis=False):
+def get_Cd(v,D,mu=1.85e-5,rho=1.225,crisis=False,golf=False):
 	"""
 	Calcula el coeficiente de arrastre (Cd) para una esfera en función de Re.
+	Re lo calcula con la función de arriba a partir de:
+	v -> modulo de velocidad (float): m/s
+	D -> longitud_caracteristica (float): m (ej. diámetro de tubería)
+	     Si es una esfera es el diametro
+	mu -> viscosidad dinamica (float): Pa·s o kg/(m·s)
+	rho -> densidad (float): kg/m^3
+		
+	El cálculo es, en principio para una esfera lisa, si crisis=False no
+	se tiene en cuenta la cirsis de arrastre (aprox. Re>2e5 porque en muchos
+	casos es difícil de conseguir)
+	Si golf=True, tenemos en cuenta los dimples (hoyuelos) y la crisis de
+	arrastre aparece antes re>40000
 	"""
-	if Re <= 0:
+	
+	Re=get_reynolds(v,D,mu=mu,rho=rho)
+	
+	if Re == float('inf'):
 		return 0.0
+	
+	#----- especial para la pelota de golf:
+	if golf:
+		if Re>40000:
+			return 0.22 #Cd reducido por la crisis de arrastre
+		else:
+			return 0.5 #Antes de la crisis Cd es mayor que para la esfera lisa	
+	
+	############## esto ya es lo que había antes para esferas lisas
 	
 	# 1. Schiller–Naumann para Re < 1000
 	if Re < 1000:
@@ -209,4 +322,4 @@ def aplicar_magnus(body,AREA_M2, M_PX=1, k=0.7, v_viento=[0,0],offset=(0,0)):  #
 
 		
 if __name__ == "__main__": 
-	print(get_Cd(1000000))
+	print(get_Cd(55,0.03,golf=True))
