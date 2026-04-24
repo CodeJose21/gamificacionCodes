@@ -161,6 +161,11 @@ def crear_bola(space, x, y):
 
     return body, shape
 
+def calcular_energia_cinetica(bola):
+    v = bola.velocity.length
+    ec = MASA*(v**2)/2
+    return ec
+
 
 # =========================================================
 # CREAR PLANO INCLINADO
@@ -183,6 +188,13 @@ def crear_plano_inclinado(space):
 
     return plano
 
+# ===========================
+# TEXTO
+# ===========================
+
+def dibujar_texto(screen, texto, x, y, font, color=(20, 20, 20)):
+    superficie = font.render(texto, True, color)
+    screen.blit(superficie, (x, y))
 
 # =========================================================
 # MAIN
@@ -192,7 +204,7 @@ def main():
 
     screen = pygame.display.set_mode((WIDTH, HEIGHT))
     pygame.display.set_caption("Pelota de playa rodando por plano inclinado")
-
+    font = pygame.font.SysFont("arial", 22)
     clock = pygame.time.Clock()
 
     space = pymunk.Space()
@@ -226,6 +238,9 @@ def main():
 
         # Dibuja encima la pelota personalizada
         draw_beach_ball(screen, bola_body, RADIO)
+
+        ec = calcular_energia_cinetica(bola_body)
+        dibujar_texto(screen, f"Energia Cinética: {ec:.3f} J", 20, 20, font)
 
         pygame.display.flip()
 
