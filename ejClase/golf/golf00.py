@@ -11,10 +11,13 @@ import numpy as np
 WIDTH, HEIGHT = 1000, 600
 FPS = 60
 NIVEL_DEL_SUELO = HEIGHT - 60
+BOLA_CAIDA = False
 
 PX_M = 5
 M_PX = 1 / PX_M
 RADIO_M = 0.0213
+
+BLACK = (20, 20, 20)
 
 # Tamaño visual de la bola
 RADIO_BOLA = int(RADIO_M * PX_M * 60)
@@ -115,6 +118,60 @@ def dibujar_palo(screen, palo_body):
     pygame.draw.polygon(screen, (40, 40, 40), tri_points)
 
 
+def draw_beach_ball(screen, body, radius_px):
+    sx = int(body.position.x)
+    sy = int(body.position.y)
+    r_px = max(8, int(radius_px))
+
+    colors = [
+        (235, 70, 70),
+        (255, 210, 60),
+        (70, 170, 255),
+        (70, 210, 140),
+        (255, 140, 60),
+        (255, 105, 180),
+    ]
+
+    pygame.draw.circle(screen, (245, 245, 245), (sx, sy), r_px)
+
+    angle = body.angle
+
+    for i, color in enumerate(colors):
+        a0 = angle + i * math.tau / len(colors)
+        a1 = angle + (i + 1) * math.tau / len(colors)
+
+        p0 = (sx, sy)
+        p1 = (
+            sx + int(math.cos(a0) * r_px),
+            sy + int(math.sin(a0) * r_px),
+        )
+        p2 = (
+            sx + int(math.cos(a1) * r_px),
+            sy + int(math.sin(a1) * r_px),
+        )
+
+        pygame.draw.polygon(screen, color, [p0, p1, p2])
+
+    pygame.draw.circle(screen, BLACK, (sx, sy), r_px, 2)
+    pygame.draw.circle(screen, (250, 250, 250), (sx, sy), max(4, r_px // 5))
+    pygame.draw.circle(screen, BLACK, (sx, sy), max(4, r_px // 5), 1)
+
+    marker_angle = body.angle
+    mx = sx + int(math.cos(marker_angle) * r_px * 0.65)
+    my = sy + int(math.sin(marker_angle) * r_px * 0.65)
+
+    pygame.draw.circle(screen, (255, 255, 255), (mx, my), max(3, r_px // 8))
+    pygame.draw.circle(screen, BLACK, (mx, my), max(3, r_px // 8), 1)
+
+
+# =========================================================
+# HUD
+# =========================================================
+def dibujar_texto(screen, font, texto, x, y, color=BLACK):
+    img = font.render(texto, True, color)
+    screen.blit(img, (x, y))
+
+
 # =========================================================
 # RUN
 # =========================================================
@@ -123,6 +180,7 @@ def run():
     screen = pygame.display.set_mode((WIDTH, HEIGHT))
     pygame.display.set_caption("Golf")
     clock = pygame.time.Clock()
+    font = pygame.font.SysFont("arial", 22)
 
     try:
         bg_image = pygame.image.load("ejClase/golf/calle_golf.png")
@@ -159,15 +217,31 @@ def run():
     # Swing
     angulo_inicial = 45
     angulo_final = -35
-    velocidad_angular = 300  # grados/s
+    velocidad_angular = 50  # grados/s
     swing_activo = False
 
     palo_body.angle = math.radians(angulo_inicial)
     palo_body.angular_velocity = 0
 
+    # =====================================================
+    # MÉTRICAS
+    # =====================================================
+    tiempo = 0.0
+
+    llego_200m = False
+    toco_suelo = False
+
+    distancia_max_m = 0.0
+    altura_max_m = 0.0
+
+    # altura inicial en metros respecto al suelo
+    altura_inicial_m = (NIVEL_DEL_SUELO - bola_body.position.y) * M_PX
+    altura_max_m = altura_inicial_m
+
     running = True
     while running:
         dt = 1.0 / FPS
+        tiempo += dt
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -189,6 +263,14 @@ def run():
                     bola_body.angle = 0
                     bola_body.activate()
 
+                    # reset métricas
+                    tiempo = 0.0
+                    llego_200m = False
+                    toco_suelo = False
+                    distancia_max_m = 0.0
+                    altura_inicial_m = (NIVEL_DEL_SUELO - bola_body.position.y) * M_PX
+                    altura_max_m = altura_inicial_m
+
         if swing_activo:
             if palo_body.angle <= math.radians(angulo_final):
                 palo_body.angle = math.radians(angulo_final)
@@ -196,39 +278,91 @@ def run():
                 swing_activo = False
 
         # =================================================
-        # ROZAMIENTO DEL AIRE
-        # OJO: estas funciones esperan magnitudes en metros
+        # ROZAMIENTO DE RODADURA
         # =================================================
-        v_m = bola_body.velocity.length * M_PX
-        diametro_m = 2 * RADIO_M
-        area_m2 = np.pi * (RADIO_M ** 2)
+        if abs(bola_body.position.y - (NIVEL_DEL_SUELO - RADIO_BOLA)) < 1.0:
+            print("ANTES rodadura:", bola_body.angular_velocity)
+            roz.aplicar_rodadura(bola_body, Crr=0.8)
+            print("DESPUÉS rodadura:", bola_body.angular_velocity)
+        else:
+        # =================================================
+        # ROZAMIENTO DEL AIRE
+        # =================================================
+            v_m = bola_body.velocity.length * M_PX
+            diametro_m = 2 * RADIO_M
+            area_m2 = np.pi * (RADIO_M ** 2)
 
-        cd = roz.get_Cd(v=v_m, D=diametro_m, crisis=True, golf=True)
-        roz.aplicar_newton(bola_body, area_m2, M_PX=M_PX, Cd=cd)
+            cd = roz.get_Cd(v=v_m, D=diametro_m, crisis=True, golf=True)
+            # roz.aplicar_newton(bola_body, area_m2, M_PX=M_PX, Cd=cd)
+            # roz.aplicar_magnus(bola_body, area_m2, M_PX=M_PX)
+            # roz.aplicar_frenado_aire_rotacional(bola_body, R=RADIO_M, Cm=0.07)
 
         space.step(dt)
 
+        # =================================================
+        # ACTUALIZAR MÉTRICAS
+        # =================================================
+        x_m = bola_body.position.x * M_PX
+        altura_actual_m = max(0.0, (NIVEL_DEL_SUELO - bola_body.position.y) * M_PX)
+        v_m = bola_body.velocity.length * M_PX
+
+        if x_m > distancia_max_m:
+            distancia_max_m = x_m
+
+        if altura_actual_m > altura_max_m:
+            altura_max_m = altura_actual_m
+
+        # =================================================
+        # EVENTO: TOCA EL SUELO
+        # =================================================
+        if (not toco_suelo) and (bola_body.position.y >= NIVEL_DEL_SUELO - RADIO_BOLA + 1):
+            toco_suelo = True
+            print(
+                f"Tocó el suelo | "
+                f"t = {tiempo:.2f} s | "
+                f"X = {x_m:.2f} m | "
+                f"altura = {altura_actual_m:.2f} m | "
+                f"velocidad = {v_m:.2f} m/s"
+            )
+
+        # =================================================
+        # EVENTO: LLEGA A 200 m
+        # =================================================
+        if (not llego_200m) and (x_m >= 200):
+            llego_200m = True
+            print(
+                f"Llegó a 200 m | "
+                f"t = {tiempo:.2f} s | "
+                f"velocidad = {v_m:.2f} m/s"
+            )
+
+        # =================================================
+        # DIBUJO
+        # =================================================
         screen.fill((135, 206, 235))
 
         if bg_image:
             screen.blit(bg_image, bg_pos)
 
-        # Dibujar bola de forma segura
         x_draw = bola_body.position.x
         y_draw = bola_body.position.y
+        if 0 <= x_draw <= WIDTH and 0 <= y_draw <= HEIGHT:
+            draw_beach_ball(screen, bola_body, RADIO_BOLA)
 
-        if math.isfinite(x_draw) and math.isfinite(y_draw):
-            pygame.draw.circle(
-                screen,
-                (255, 255, 255),
-                (round(x_draw), round(y_draw)),
-                RADIO_BOLA
-            )
-        else:
-            print("Posición inválida de la bola:", bola_body.position)
-
-        # Dibujar palo
         dibujar_palo(screen, palo_body)
+
+        # HUD
+        dibujar_texto(screen, font, f"t = {tiempo:.2f} s", 20, 20)
+        dibujar_texto(screen, font, f"x = {x_m:.2f} m", 20, 50)
+        dibujar_texto(screen, font, f"y = {bola_body.position.y * M_PX:.2f} m", 20, 80)
+        dibujar_texto(screen, font, f"v = {v_m:.2f} m/s", 20, 110)
+        dibujar_texto(screen, font, f"Distancia max = {distancia_max_m:.2f} m", 20, 140)
+        dibujar_texto(screen, font, f"Altura max = {altura_max_m:.2f} m", 20, 170)
+
+        estado_suelo = "Sí" if toco_suelo else "No"
+        estado_200 = "Sí" if llego_200m else "No"
+        dibujar_texto(screen, font, f"Tocó suelo: {estado_suelo}", 20, 200)
+        dibujar_texto(screen, font, f"Llegó a 200 m: {estado_200}", 20, 230)
 
         pygame.display.flip()
         clock.tick(FPS)
