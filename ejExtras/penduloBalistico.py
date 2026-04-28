@@ -15,14 +15,14 @@ GREEN = (30, 150, 80, 255)
 GRAY = (120, 120, 120, 255)
 
 PIXELS_PER_METER = 220
-SUBSTEPS = 10
+SUBSTEPS = 100
 DT = 1 / FPS
 SUB_DT = DT / SUBSTEPS
-G = 9.81
+G = 9.81*PIXELS_PER_METER
 
 MASA_PROYECTIL = 0.03
 RADIO_PROYECTIL = 10
-VELOCIDAD_INICIAL_M_S = 23.0
+VELOCIDAD_INICIAL_M_S = 500.0
 VELOCIDAD_INICIAL_PX_S = VELOCIDAD_INICIAL_M_S * PIXELS_PER_METER
 
 MASA_BLOQUE = 0.50
@@ -291,17 +291,10 @@ def fusionar_proyectil_con_pendulo(space, proyectil, pendulo):
     m1 = proyectil.masa
     m2 = pendulo.masa_bloque
 
-    vx1, vy1 = proyectil.body.velocity
-    vx2, vy2 = pendulo.body.velocity
-
-    vfx = (m1 * vx1 + m2 * vx2) / (m1 + m2)
-    vfy = (m1 * vy1 + m2 * vy2) / (m1 + m2)
-
     space.remove(proyectil.body, proyectil.shape)
 
     pendulo.body.mass = m1 + m2
     pendulo.body.moment = pymunk.moment_for_circle(m1 + m2, 0, pendulo.radio_bloque)
-    pendulo.body.velocity = (vfx, vfy)
     pendulo.impactado = True
 
 
@@ -338,7 +331,7 @@ def main():
             fusionar_proyectil_con_pendulo(space_interno, proyectil, pendulo)
         return False
 
-    space.on_collision(1, 2, begin=colision)
+    space.on_collision(1, 2, separate=colision)
 
     running = True
     while running:

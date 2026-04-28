@@ -9,18 +9,19 @@ import numpy as np
 # CONFIGURACIÓN
 # =========================================================
 WIDTH, HEIGHT = 1000, 600
-FPS = 60
+FPS = 100
 NIVEL_DEL_SUELO = HEIGHT - 60
 BOLA_CAIDA = False
 
-PX_M = 5
+PX_M = 50
 M_PX = 1 / PX_M
-RADIO_M = 0.0213
+RADIO_M = 0.213
 
 BLACK = (20, 20, 20)
 
 # Tamaño visual de la bola
-RADIO_BOLA = int(RADIO_M * PX_M * 60)
+RADIO_BOLA = RADIO_M * PX_M
+RADIO_VISUAL = RADIO_BOLA
 
 # =========================================================
 # SUELO
@@ -32,9 +33,9 @@ def crearSuelo(space):
         body,
         (0, NIVEL_DEL_SUELO),
         (WIDTH, NIVEL_DEL_SUELO),
-        2
+        0
     )
-    suelo.friction = 0.8
+    suelo.friction = 2
     suelo.elasticity = 0.0
 
     space.add(body, suelo)
@@ -52,7 +53,7 @@ def crearBola(space, x, y):
     body.position = (x, y)
 
     shape = pymunk.Circle(body, RADIO_BOLA)
-    shape.friction = 0.8
+    shape.friction = 2
     shape.elasticity = 0.8
 
     space.add(body, shape)
@@ -171,6 +172,111 @@ def dibujar_texto(screen, font, texto, x, y, color=BLACK):
     img = font.render(texto, True, color)
     screen.blit(img, (x, y))
 
+def dibujar_trayectoria_recorrida(
+    screen,
+    body,
+    trayectoria,
+    color=(255, 0, 0),
+    guardar_cada_frames=1,
+    frame_actual=0,
+    max_puntos=None,
+    grosor_linea=2,
+    radio_punto=3,
+    dibujar_linea=True,
+    dibujar_puntos=False,
+    alpha=255,
+    limpiar_si_se_para=False,
+    velocidad_minima=1.0
+):
+    """
+    Guarda temporalmente y dibuja la trayectoria ya recorrida por un body.
+
+    Parámetros:
+    - screen: pantalla de pygame.
+    - body: cuerpo de pymunk.
+    - trayectoria: lista donde se almacenan los puntos recorridos.
+    - color: color RGB de la trayectoria.
+    - guardar_cada_frames: cada cuántos frames se añade un punto.
+    - frame_actual: frame actual del bucle.
+    - max_puntos: máximo de puntos visibles. Si es None, no se limita.
+    - grosor_linea: grosor de la línea.
+    - radio_punto: tamaño de los puntos.
+    - dibujar_linea: si True, une los puntos.
+    - dibujar_puntos: si True, dibuja puntos.
+    - alpha: transparencia, de 0 a 255.
+    - limpiar_si_se_para: si True, borra la trayectoria cuando el cuerpo se para.
+    - velocidad_minima: velocidad por debajo de la cual se considera parado.
+    """
+
+    # Si queremos borrar la trayectoria cuando el cuerpo se pare
+    if limpiar_si_se_para and body.velocity.length < velocidad_minima:
+        trayectoria.clear()
+        return
+
+    # Añadir punto nuevo cada ciertos frames
+    if frame_actual % guardar_cada_frames == 0:
+        x, y = body.position
+        trayectoria.append((int(x), int(y)))
+
+    # Limitar cantidad de puntos
+    if max_puntos is not None:
+        while len(trayectoria) > max_puntos:
+            trayectoria.pop(0)
+
+    if len(trayectoria) < 2:
+        return
+
+    # Si no hay transparencia especial, dibujamos directamente
+    if alpha >= 255:
+        if dibujar_linea:
+            pygame.draw.lines(
+                screen,
+                color,
+                False,
+                trayectoria,
+                grosor_linea
+            )
+
+        if dibujar_puntos:
+            for punto in trayectoria:
+                pygame.draw.circle(
+                    screen,
+                    color,
+                    punto,
+                    radio_punto
+                )
+
+    # Si hay transparencia, usamos una superficie auxiliar
+    else:
+        capa = pygame.Surface(screen.get_size(), pygame.SRCALPHA)
+
+        color_alpha = (
+            color[0],
+            color[1],
+            color[2],
+            alpha
+        )
+
+        if dibujar_linea:
+            pygame.draw.lines(
+                capa,
+                color_alpha,
+                False,
+                trayectoria,
+                grosor_linea
+            )
+
+        if dibujar_puntos:
+            for punto in trayectoria:
+                pygame.draw.circle(
+                    capa,
+                    color_alpha,
+                    punto,
+                    radio_punto
+                )
+
+        screen.blit(capa, (0, 0))
+
 
 # =========================================================
 # RUN
@@ -181,6 +287,8 @@ def run():
     pygame.display.set_caption("Golf")
     clock = pygame.time.Clock()
     font = pygame.font.SysFont("arial", 22)
+    trayectoria_bola = []
+    frame_actual = 0
 
     try:
         bg_image = pygame.image.load("ejClase/golf/calle_golf.png")
@@ -217,7 +325,7 @@ def run():
     # Swing
     angulo_inicial = 45
     angulo_final = -35
-    velocidad_angular = 50  # grados/s
+    velocidad_angular = 150  # grados/s
     swing_activo = False
 
     palo_body.angle = math.radians(angulo_inicial)
@@ -242,6 +350,7 @@ def run():
     while running:
         dt = 1.0 / FPS
         tiempo += dt
+        frame_actual +=1
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -280,10 +389,8 @@ def run():
         # =================================================
         # ROZAMIENTO DE RODADURA
         # =================================================
-        if abs(bola_body.position.y - (NIVEL_DEL_SUELO - RADIO_BOLA)) < 1.0:
-            print("ANTES rodadura:", bola_body.angular_velocity)
-            roz.aplicar_rodadura(bola_body, Crr=0.8)
-            print("DESPUÉS rodadura:", bola_body.angular_velocity)
+        if bola_body.position.y >= (NIVEL_DEL_SUELO - RADIO_BOLA ):
+            roz.aplicar_rodadura(bola_body, Crr=0.2 )
         else:
         # =================================================
         # ROZAMIENTO DEL AIRE
@@ -305,6 +412,7 @@ def run():
         x_m = bola_body.position.x * M_PX
         altura_actual_m = max(0.0, (NIVEL_DEL_SUELO - bola_body.position.y) * M_PX)
         v_m = bola_body.velocity.length * M_PX
+        w_m = bola_body.angular_velocity
 
         if x_m > distancia_max_m:
             distancia_max_m = x_m
@@ -322,7 +430,7 @@ def run():
                 f"t = {tiempo:.2f} s | "
                 f"X = {x_m:.2f} m | "
                 f"altura = {altura_actual_m:.2f} m | "
-                f"velocidad = {v_m:.2f} m/s"
+                f"velocidad = {v_m:.2f} m/s" 
             )
 
         # =================================================
@@ -341,13 +449,28 @@ def run():
         # =================================================
         screen.fill((135, 206, 235))
 
+        dibujar_trayectoria_recorrida(
+        screen=screen,
+        body=bola_body,
+        trayectoria=trayectoria_bola,
+        color=(255, 0, 0),
+        guardar_cada_frames=2,
+        frame_actual=frame_actual,
+        max_puntos=500,
+        grosor_linea=2,
+        radio_punto=3,
+        dibujar_linea=True,
+        dibujar_puntos=False,
+        alpha=180
+        )
+
         if bg_image:
             screen.blit(bg_image, bg_pos)
 
         x_draw = bola_body.position.x
         y_draw = bola_body.position.y
         if 0 <= x_draw <= WIDTH and 0 <= y_draw <= HEIGHT:
-            draw_beach_ball(screen, bola_body, RADIO_BOLA)
+            draw_beach_ball(screen, bola_body, RADIO_VISUAL)
 
         dibujar_palo(screen, palo_body)
 
@@ -358,10 +481,11 @@ def run():
         dibujar_texto(screen, font, f"v = {v_m:.2f} m/s", 20, 110)
         dibujar_texto(screen, font, f"Distancia max = {distancia_max_m:.2f} m", 20, 140)
         dibujar_texto(screen, font, f"Altura max = {altura_max_m:.2f} m", 20, 170)
+        dibujar_texto(screen, font, f"velocidad angular = {w_m:-2f} rad/s",20,190)
 
         estado_suelo = "Sí" if toco_suelo else "No"
         estado_200 = "Sí" if llego_200m else "No"
-        dibujar_texto(screen, font, f"Tocó suelo: {estado_suelo}", 20, 200)
+        dibujar_texto(screen, font, f"Tocó suelo: {estado_suelo}", 20, 210)
         dibujar_texto(screen, font, f"Llegó a 200 m: {estado_200}", 20, 230)
 
         pygame.display.flip()
